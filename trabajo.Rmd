@@ -1,0 +1,830 @@
+---
+title: 'Detección de Anomalías'
+subtitle: 'Trabajo práctico sobre el dataset Basketball'
+author: "Antonio Manjavacas Lucas"
+date: "24/12/2020"
+output: 
+  html_document:
+    toc: true
+---
+
+<style>
+  body {text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, message = FALSE)
+set.seed(42)
+
+```
+
+```{r}
+
+library(ggplot2)
+library(fitdistrplus)
+library(reshape)
+library(ggbiplot)
+library(tidyverse)   
+library(outliers)
+library(MVN)
+library(CerioliOutlierDetection)
+library(mvoutlier)
+library(DMwR)
+library(cluster)
+
+# funciones proporcionadas
+source('./functions/OutliersFunciones_byCubero.R')
+
+```
+
+
+```{r}
+
+library(readr)
+datos <- read.csv('data/basketball.dat', comment = '@')
+
+rownames(datos) <- paste('Player', 1:nrow(datos), sep='_')
+colnames(datos) <- c('assists_per_min', 'height', 'time_played', 'age', 'points_per_min')
+
+```
+
+
+# 1. Exploración del dataset
+
+El dataset elegido para llevar a cabo este trabajo es *Basketball* (http://pcaltay.cs.bilkent.edu.tr/DataSets/). Se trata de un conjunto de datos que contiene características de 95 jugadores de baloncesto. Dichas características son las siguientes:
+
+* `assists_per_min`: número de asistencias medio por minuto.
+* `height`: altura del jugador.
+* `time_played`: tiempo jugado por el jugador.
+* `age`: edad del jugador.
+* `points_per_min`: media de puntos anotados por minuto.
+
+Puede observarse que las 5 columnas albergan datos numéricos, por lo que no descartaremos ninguna de ellas.
+
+Veamos las primeras instancias del dataset:
+
+```{r}
+
+head(datos)
+
+```
+
+Como puede observarse, se ha decidido asignar un nombre a cada una de las filas de cara a facilitar la identificación de los jugadores.
+
+Finalmente, podemos observar que no existen valores perdidos en ninguna columna.
+
+```{r include=FALSE}
+
+str(datos)
+summary(datos)
+colSums(is.na(datos))
+
+```
+
+# 2. Detección de outliers en una dimensión
+
+Comencemos estudiando los outliers presentes en una única columna. Son los denominados outliers 1-variantes.
+
+## 2.1. Método IQR
+
+Para aplicar el método IQR debemos cerciorarnos previamente de que los datos a estudiar siguen una distribución normal o, al menos, no lo suficientemente rara. Podemos estudiar dichas distribuciones a partir de los histogramas y *boxplots* que a continuación se muestran:
+
+```{r}
+
+# Numero de bins elegido siguiendo la Regla de Sturges:
+# https://es.wikipedia.org/wiki/Regla_de_Sturges
+
+n_bins = 7
+
+datos %>% gather(variable, value) %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = n_bins, fill = 'cornflowerblue', color = 'black') +
+  facet_wrap( ~ variable, scale = 'free') + 
+  theme_minimal() + labs(x = '', y = '')
+
+```
+
+```{r}
+
+datos %>% gather(variable, value) %>%
+  ggplot(aes(factor(variable), value)) + geom_boxplot(fill = 'cornflowerblue') +
+  facet_wrap( ~ variable, scale = 'free') + theme_minimal() +
+  labs(
+    x = '',
+    y = ''
+  )
+
+```
+
+Podemos observar que la mayoría de las variables (tal vez a excepción de `time_played`) siguen distribuciones no demasiado atípicas, por lo que a priori no descartaremos ninguna columna de nuestro conjunto de datos.
+
+Estudiadas informalmente la distribución de las diferentes variables, elegiremos `points_per_min` para llevar a cabo el estudio de métodos 1-variante.
+
+```{r}
+
+indice.columna = 5
+columna = datos[, indice.columna]
+nombre.columna = names(datos)[indice.columna]
+
+```
+
+### Obtención de outliers IQR
+
+Obtengamos los outliers de la variable `points_per_min` haciendo uso del rango intercuartílico (IQR). Aplicando las funciones proporcionadas, observamos la existencia de un único outlier y de ningún outlier extremo. Concretamente, el outlier encontrado se corresponde con el jugador `Player_1`.
+
+```{r echo=TRUE}
+
+son.outliers.IQR <- son_outliers_IQR(datos, indice.columna)
+claves.outliers.IQR <- claves_outliers_IQR(datos, indice.columna)
+
+son.outliers.IQR.extremos <- son_outliers_IQR(datos, indice.columna, 3)
+claves.outliers.IQR.extremos <- claves_outliers_IQR(datos, indice.columna, 3)
+
+datos[claves.outliers.IQR, ]
+
+```
+
+### Desviación de los outliers con respecto a la media de la columna
+
+Podemos aplicar el método de estandarización *z-score* para facilitar la identificación de valores atípicos en nuestro conjunto de datos. Así, valores que se encuentran (de forma aproximada) en el intervalo [-2.68, 2.68] pueden ser considerados normales, mientras que aquellos valores que excedan estos límites se identificarán como atípicos (excesivamente alejados de la media).
+
+```{r echo=TRUE}
+
+datos.norm <- scale(datos)
+
+columna.norm <- datos.norm[, indice.columna]
+
+valores.outliers.IQR.norm <- columna.norm[claves.outliers.IQR]
+valores.outliers.IQR.norm
+
+```
+
+Observamos que para el outlier de la variable `points_per_min` identificado (correspondiente al jugador `Player_1`) un valor de 3.8 representa una media de puntos por minuto bastante superior a lo habitual, de ahí que se considere como un valor atípico. Si bien esta interpretación sólo será precisa si la distribución subyacente es normal (algo que todavía no hemos demostrado), podemos adelantar que la variable `points_per_min` lo es (lo veremos más adelante).
+
+Es conveniente estudiar el comportamiento del resto de columnas para los outliers 1-variantes identificados:
+
+```{r echo=TRUE}
+
+datos.norm.outliers.IQR <- datos.norm[claves.outliers.IQR,]
+datos.norm.outliers.IQR
+
+```
+
+Puede observarse que el resto de características del jugador `Player_1` no toman valores excesivamente alejados de la media.
+
+### Gráficos: *scatterplots*
+
+Visualicemos el outlier identificado:
+
+```{r}
+
+plot_2_colores(datos.norm[, indice.columna], 
+               titulo = 'Media de puntos por minuto', 
+               claves.outliers.IQR)
+
+```
+
+Al no haber outliers extremos, si empleamos la misma función para representarlos, ningún punto quedará marcado en color rojo:
+
+```{r}
+
+plot_2_colores(datos[, indice.columna], 
+               titulo='Media de puntos por minuto', 
+               claves.outliers.IQR.extremos)
+
+```
+
+### Gráficos: *boxplots*
+
+Otra opción para visualizar los outliers es emplear *boxplots*. Se trata de un gráfico especialmente útil para detectar valores extremos:
+
+```{r}
+
+diag_caja_outliers_IQR(datos.norm, indice.columna)
+
+```
+
+```{r}
+
+diag_caja(datos.norm, indice.columna, claves.outliers.IQR)
+
+```
+
+En los boxplots podemos ver claramente la naturaleza atípica de la variable `points_per_min` del jugador `Player_1`.
+
+De forma similar a como hicimos anteriormente, analicemos de forma conjunta los *boxplots* de múltiples variables. De esta forma veremos qué valores toma el registro correspondiente al jugador `Player_1` en el resto de columnas:
+
+```{r}
+
+diag_caja_juntos(datos.norm, 
+                 titulo = 'Outliers en alguna columna',
+                 claves.outliers.IQR)
+
+```
+
+Así, corroboramos gráficamente que los valores del resto de variables de `Player_1` no son especialmente atípicos (tal vez una altura y tiempo de juego considerablemente mayores al del resto de jugadores).
+
+## 2.2. Test de hipótesis
+
+### Test de Grubbs
+
+El objetivo a perseguir en este apartado será el de comprobar estadísticamente si el valor más alejado de la media de la variable `points_per_min` (el jugador `Player_1`) puede considerarse como un outlier. Un método de detección de outliers basado en test de hipótesis es más robusto y ofrece mayores garantías frente al método IQR. En nuestro caso emplearemos el test de Grubbs.
+
+Para garantizar la robustez del test de Grubbs es necesario que los datos a estudiar (sin tener en cuenta el outlier a identificar) sigan una distribución Normal. Gráficamente, dicha normalidad es bastante prometedora:
+
+```{r}
+
+ajusteNormal <- fitdist(columna , 'norm')
+denscomp (ajusteNormal,  xlab = nombre.columna)
+
+```
+
+Sobre estas premisas, procedamos con el test de Grubbs, cuya hipótesis nula es la siguiente: 
+
+> $H_0$: *el valor más alejado de la media proviene de la misma distribución que el resto de datos*
+
+
+```{r include=FALSE}
+
+test.de.Grubbs <- grubbs.test(columna, two.sided=TRUE)
+test.de.Grubbs$p.value
+
+```
+
+Tras aplicar el test obtenemos un p-value = 0.007, por lo que refutamos la hipótesis nula ($\alpha$ > 0.007) y asumimos la hipótesis alternativa:
+
+> $H_A$: *el valor más alejado de la media NO proviene de la misma distribución que el resto de datos*
+
+Confirmamos de esta forma que el valor de `points_per_min` del jugador `Player_1` es un outlier, con una media de 0.8291 puntos anotados por minuto.
+
+```{r include=FALSE}
+
+valor.posible.outlier <- outlier(columna)
+valor.posible.outlier
+
+```
+
+Sin embargo, la aplicación del test de Grubbs no termina aquí. Debemos comprobar que los datos que quedan después de eliminar el outlier conservan una distribución Normal. En este caso, emplearemos el test de Shapiro-Wilk para comprobar dicha normalidad, cuya hipótesis nula es la siguiente:
+
+> $H_0$: *la distribución subyacente de la variable es una Normal*
+
+```{r}
+
+es.posible.outlier <- outlier(columna, logical = TRUE)
+clave.posible.outlier <- which(es.posible.outlier == TRUE)
+
+columna.sin.outlier <- columna[-clave.posible.outlier]
+shapiro.test(columna.sin.outlier)
+
+```
+
+Obtenemos un p-value = 0.7351, por lo que aceptamos la hipótesis nula ($\alpha < 0.7351$): la distribución subyacente a la variable `points_per_min` puede considerarse Normal.
+
+Todo el proceso llevado a cabo anteriormente puede resumirse en la siguiente función:
+
+```{r echo=TRUE}
+
+test_Grubbs <- function(datos, ind.col) {
+  require(outliers)
+  
+  columna <- datos[, ind.col]
+  
+  nombre.columna <- colnames(datos)[ind.col]
+  
+  son.outliers <- outlier(columna, logical = TRUE)
+  clave.mas.alejado.media <- which(son.outliers)
+  valor.mas.alejado.media <- columna[clave.mas.alejado.media]
+  nombre.mas.alejado.media <- rownames(datos[clave.mas.alejado.media,])
+  
+  test.de.Grubbs <- grubbs.test(columna, two.sided = TRUE)
+  es.outlier <- test.de.Grubbs$p.value < 0.05
+  p.value <- test.de.Grubbs$p.value
+  
+  # eliminamos el outlier antes de aplicar el test
+  columna.sin.outlier = columna[-clave.mas.alejado.media]
+  columna.sin.outlier
+
+  # aplicamos el test de Shapiro-Wilk
+  test.de.Shapiro <- shapiro.test(columna.sin.outlier)
+  es.distrib.norm <- test.de.Shapiro$p.value > 0.05
+  
+  list('nombre.columna'=nombre.columna, 
+       'clave.mas.alejado.media'=clave.mas.alejado.media, 
+       'valor.mas.alejado.media'=valor.mas.alejado.media, 
+       'nombre.mas.alejado.media'=nombre.mas.alejado.media,
+       'es.outlier'=es.outlier, 
+       'p.value'=p.value, 
+       'es.distrib.norm'=es.distrib.norm)
+}
+
+test_Grubbs(datos, indice.columna)
+
+```
+
+### Outliers IQR en múltiples columnas
+
+A continuación, aplicaremos los procesos anteriores sobre todas las columnas del conjunto de datos.
+
+Empecemos calculando los outliers IQR con respecto a cada una de las columnas, obteniendo aquellos registros que son outliers con respecto a alguna columna:
+
+```{r}
+
+claves.outliers.IQR.en.alguna.columna <- claves_outliers_IQR_en_alguna_columna(datos, 1.5)
+nombres_filas(datos, claves.outliers.IQR.en.alguna.columna)
+
+```
+
+Podemos observar que no se encuentran registros duplicados, es decir, observaciones donde más de una variable toma valores atípicos. Las observaciones encontradas que se corresponden con outliers IQR son las correspondientes a las jugadores `Player_51`, `Player_69`, `Player_90` y el ya mencionado `Player_1`.
+
+Observemos los valores normalizados de estos 4 outliers:
+
+```{r}
+
+datos.norm[claves.outliers.IQR.en.alguna.columna,]
+
+```
+
+También podemos verlos de forma gráfica por medio de *boxplots*:
+
+```{r}
+
+diag_caja_juntos(datos.norm, titulo='Outliers en alguna columna', 
+                 claves.a.mostrar = claves.outliers.IQR.en.alguna.columna)
+
+```
+
+En base a los datos recopilados, podemos concluir en lo siguiente:
+
+* `Player_51` cuenta con un valor atípicamente bajo con respecto a la variable `height` (altura). Cuenta con un tiempo de juego (`time_played`) moderado, así como con unos valores para `age`y `assists_per_min` notablemente altos.
+* `Player_69` presenta un valor aún más extremo en la variable `height` (en este caso, a la baja). Los valores de `time_played` y `assists_per_min` son altos, mientras que cuenta con un valor de `points_per_min` bajo. Podríamos intuir que se trata de un jugador que ocupa la posición de base, ya que estos jugadores son normalmente bajos, realizan muchas asistencias y no tienden a ser altos anotadores.
+* `Player_90` cuenta con un valor de `height` atípicamente bajo, aunque no tanto como en el caso anterior. Se trata de un jugador joven con poco tiempo de juego y baja estatura.
+* `Player_1` presenta una media de puntos por minuto (`points_per_min`) muy superior al resto, tal y como ya habíamos adelantado. Vemos que su altura y tiempo jugado es superior a la media, lo que puede justificar en gran medida su elevada media de anotaciones por minuto.
+
+### Test de hipótesis en múltiples columnas
+
+Ejecutemos el test de Grubbs sobre múltiples columnas. Primero, estudiaremos la normalidad de las diferentes variables:
+
+```{r echo=TRUE, results='hide', fig.keep='all'}
+
+ver_normalidad <- function(columna, columna.nombre) {
+  ajusteNormal = fitdist(columna, 'norm')
+  denscomp(ajusteNormal, xlab=columna.nombre)
+}
+
+sapply(1:ncol(datos), function(i) ver_normalidad(datos[, i], names(datos)[i]))
+
+```
+
+
+Podemos ver que la variable `time_played` es la que más se aleja de una Normal, aunque la mantendremos igualmente. Apliquemos, pues, el test de Grubbs sobre cada una de las variables:
+
+```{r echo=TRUE}
+
+sapply(1:ncol(datos), function(i) test_Grubbs(datos, i))
+
+```
+
+Los resultados obtenidos nos revelan lo siguiente:
+
+* El test de Shapiro-Wilk considera que las variables `assists_per_min` y `points_per_min` no contradicen la hipótesis de normalidad, mientras que `height`, `time_played` y `age` no se acogen a esta distribución.
+* Únicamente el caso de `Player_1` puede considerarse outlier IQR con garantía estadística para la variable `points_per_min`.
+* En el caso de `assists_per_min`, el jugador con mayor posibilidad de ser outlier es `Player_31`, con un p-value = 0.173 incapaz de rechazar la hipótesis nula.
+
+# 3. Detección de outliers multivariantes
+
+Vista la detección de outliers para una sola variable, abordaremos la búsqueda de outliers multivariantes, donde entrará en juego la combinación de los valores de diferentes columnas.
+
+## 3.1. Métodos estadísticos
+
+En esta sección emplearemos técnicas estadísticas para encontrar outliers multivariantes.
+
+### Métodos basados en la distancia de Mahalanobis
+
+Partimos de la siguiente hipótesis nula:
+
+> $H_0$: *el valor más alejado del centro de la distribución no es un outlier*
+
+Para aplicar este método basado en la distancia de Mahalanobis, se asume que la distribución conjunta es una distribución Normal multivariante. Esto convierte nuestra hipótesis de estudio en la siguiente:
+
+> $H_0$: *el valor con mayor distancia de Mahalanobis al centro de la distribución viene de la misma distribución Normal multivariante que el resto de datos*
+
+Para poder considerar la distribución conjunta como Normal, es necesario comprobar que las variables que la conforman sean normales. Trabajaremos, por tanto, solamente con aquellas variables que previamente hemos asociado a una distribución Normal. Estas son `assistes_per_min` y `points_per_min`:
+
+```{r}
+
+son.col.normales <- sapply(1:ncol(datos), function(x) test_Grubbs(datos, x)$es.distrib.norm)
+
+datos.distrib.norm <- datos[,son.col.normales]
+head(datos.distrib.norm)
+
+```
+
+Como esto no garantiza por sí solo que la distribución multivariante sea normal, es necesario comprobarlo:
+
+```{r echo=TRUE}
+
+test.MVN = mvn(datos.distrib.norm, mvnTest = 'energy')
+test.MVN$multivariateNormality['MVN']
+test.MVN$multivariateNormality['p value']
+
+```
+
+Podemos ver que la distribución multivariable compuesta por `assists_per_min` y `points_per_min` es Normal (p-value = 0.705), por lo que podemos aplicar el método basado en la distancia de Mahalanobis con garantías estadísticas.
+
+```{r results='hide', fig.keep='all'}
+
+# Diferencia entre el uso de metodos robustos y no robustos
+corr.plot(datos[,1], datos[,2])
+
+```
+
+Ejecutemos, pues, los siguientes tests:
+
+* Por un lado, el *test individual*, equivalente al test de Grubbs, donde el valor más alejado del centro de la distribución será considerado outlier. Del conjunto de jugadores devuelto, solamente tenemos garantía estadística de que sea un outlier el que tiene mayor distancia de Mahalanobis, en este caso, el jugador `Player_1`. Por tanto, como ya anticipamos en anteriores secciones, el jugador `Player_1` es un outlier con garantía estadística.
+
+```{r echo=TRUE}
+
+test.cerioli.individual <- cerioli2010.fsrmcd.test(datos.distrib.norm, signif.alpha = 0.05)
+
+claves.test.individual <- which(test.cerioli.individual$outliers == TRUE)
+
+nombres.test.individual <- nombres_filas(datos.distrib.norm, claves.test.individual)
+
+nombres.test.individual
+
+```
+
+```{r echo=TRUE}
+
+clave.mayor.dist.Mah <- order(test.cerioli.individual$mahdist, decreasing = TRUE)[1]
+
+nombre.mayor.dist.Mah <- nombres_filas(datos.distrib.norm, clave.mayor.dist.Mah)
+nombre.mayor.dist.Mah
+
+```
+
+```{r}
+
+plot(sort(test.cerioli.individual$mahdist), main='Distancias de Mahalanobis (reweighted)')
+
+```
+
+
+* Por otro lado, aplicaremos el *test de intersección*, que lanza el test de forma secuencial empleando una corrección de la significación de cara evitar el FWER. Tras su ejecución, observamos que no nos devuelve ningún outlier.
+
+```{r echo=TRUE}
+
+test.cerioli.interseccion <-
+  cerioli2010.fsrmcd.test(datos.distrib.norm, signif.alpha = 1 - (1 - 0.05) ^ 
+                            (1 / nrow(datos.distrib.norm)))
+
+claves.test.interseccion <- which(test.cerioli.interseccion$outliers == TRUE)
+
+nombres.test.interseccion <- nombres_filas(datos.distrib.norm, claves.test.interseccion)
+
+nombres.test.interseccion
+
+```
+
+### Visualización mediante Biplot
+
+Empleemos un biplot para representar múltiples variables:
+
+```{r}
+
+
+biplot.outliers.IQR <- biplot_2_colores(datos, 
+                                       claves.outliers.IQR.en.alguna.columna, 
+                                       titulo.grupo.a.mostrar = 'Outliers IQR',
+                                       titulo ='Biplot Outliers IQR')
+biplot.outliers.IQR
+
+```
+
+Al utilizar biplots, la aproximación será mejor cuanto mayor sea la suma de porcentajes explicados por cada componente principal. En nuestro caso, $PC1 (29.6\%) + PC2 (34.9\%) = 64.5\%$, lo cual no es un valor tan alto como desearíamos (se espera que la suma de PC1 y PC2 supere al menos el 70%).
+
+Igualmente, no se trata de un valor radicalmente bajo, por lo que tratemos de interpretar la información proporcionada por el gráfico:
+
+* Observamos, de nuevo, que `Player_1` se etiqueta como outlier dado su alto valor en la variable `points_per_min`.
+* `Player_69` también se marca como outlier dado su valor extremo para la variable `assists_per_min` y su baja estatura (`height`).
+* Por otro lado, `Player_51` cuenta con un alto valor para la variable `assists_per_min` y muy bajo para `height`, lo que le lleva a ser considerado outlier. No obstante, no se trata de valores tan extremos como los de `Player_69`, por lo que puede que otros factores estén entrando en juego para que se catalogue como outlier.
+* Un caso llamativo es el de `Player_90`, que se cataloga como outlier sin tener valores demasiado extremos (como mucho su baja estatura).
+
+Finalmente, cabe destacar del gráfico la aparente correlación entre `age` y `time_played`. Podríamos deducir que jugadores más jóvenes tienen menos minutos de juego que los más adultos, pero tampoco nos mojaremos en esta afirmación dada la calidad del biplot (variabilidad explicada menor al 70%). Lo mismo ocurre para la aparente correlación negativa entre `height`y `assists_per_min`, de donde podríamos deducir que los jugadores más bajos realizan más asistencias porque suelen asumir la posición de *base* (jugadores encargados de dirigir el juego).
+
+## 3.2. Métodos basados en distancias: LOF
+
+Vamos a aplicar otros métodos que no ofrecen garantía estadística, pero que son capaces de determinar cómo de alejado está cada punto al resto de los datos, independientemente de la distribución subyacente. Concretamente, se trata de LOF (Local Outlier Factor). Trabajaremos empleando como medida la distancia euclídea y, como datos, nuestro dataset normalizado. Finalmente, como valor de *k* elegiremos arbitrariamente 5.
+
+```{r}
+
+num.vecinos.lof = 5
+lof.scores <- lofactor(datos.norm, k=num.vecinos.lof)
+
+```
+
+Los *outlier scores* obtenidos para cada dato se muestran ordenados en la siguiente gráfica:
+
+```{r}
+
+plot(sort(lof.scores, decreasing = TRUE), ylab='LOF')
+
+```
+
+Observamos 2 outliers claramente diferenciados del resto de datos, seguidos por otros 4 puntos con posibilidad de ser considerados outliers. Centrémonos inicialmente en los primeros:
+
+```{r}
+
+num.outliers = 6
+
+claves.outliers.lof <- order(lof.scores, decreasing=TRUE)[1:num.outliers]
+
+# nombres.outliers.lof <- nombres_filas(datos, claves.outliers.lof)
+# nombres.outliers.lof
+
+datos.norm[claves.outliers.lof, ]
+
+```
+
+* Vemos que se trata de los jugadores `Player_1`y `Player_69`, los cuales ya vimos que destacaban por su media de puntos anotados por minuto y su altura, respectivamente.
+
+Fijémonos ahora en los 4 posibles outliers restantes:
+
+* Observamos que `Player_90` y `Player_51` cuentan con valores inferiores a lo habitual para la variable `height` (jugadores bajos), mientras que `Player_31` muestra un número de asistencias por minuto (`assists_per_min`) más que destacable. No obstante, el jugador `Player_12` cuenta con un alto *outlier score* a pesar de no contar con valores extremos para ninguna de sus variables, lo cual es llamativo porque podría tratarse de una anomalía ocasionada por la combinación inusual de múltiples variables.
+
+Para estudiar el caso de `Player_12` en detalle, veamos los diagramas de dispersión correspondientes a los cruces 2 a 2 de las variables:
+
+```{r}
+
+clave.max.outlier.lof <- claves.outliers.lof[4]
+
+colores <- rep('black', times = nrow(datos.norm))
+colores[clave.max.outlier.lof] = 'red'
+pairs(datos.norm, pch = 19,  cex = 0.5, col = colores, lower.panel = NULL)
+
+```
+
+Observamos que las variables de `Player_12` presentan valores ligeramente anómalos en la combinación de `assists_per_min` y `height`, así como para `time_player` y `age`, o bien `age` y `points_per_min`. No se trata de un punto excesivamente diferenciado del resto (su LOF no es tan elevado como el resto de outliers identificados), pero sí puede verse que se encuentra notablemente alejado de la nube de puntos central para todas las gráficas mencionadas.
+
+Veamos ahora los outliers identificados en un biplot:
+
+```{r}
+
+num.outliers = 6
+
+claves.outliers.lof <- order(lof.scores, decreasing=TRUE)[1:num.outliers]
+
+biplot.outliers.lof = biplot_2_colores(datos.norm, claves.outliers.lof, titulo = 'Outliers LOF')
+biplot.outliers.lof
+
+```
+
+Del gráfico observamos que el método LOF corrobora la presencia de claros outliers como `Player_31`, `Player_51`, `Player_69` y `Player_1`. Por otro lado, el caso de los jugadores `Player_90` y `Player_12` es más discutible: mientras que el primero se encuentra en una zona algo menos densa que el resto de puntos, este método basado en distancias no nos deja completamente clara la naturaleza de `Player_12`, ya que se encuentra cerca de otros puntos similares. Podríamos intuir que la combinación de los valores de las variables `points_per_min`, `age` y `time_played` se considera anómala para el caso de este jugador.
+
+## 3.3. Métodos basados en clustering
+
+### Clustering empleando centroides
+
+Veamos ahora los resultados obtenidos aplicando clustering, concretamente *k-means*, fijando el número de outliers en 6 y el de clusters en 3.
+
+```{r results='hide'}
+
+num.outliers = 6
+num.clusters = 3
+
+set.seed(42)
+
+modelo.kmeans <- kmeans(datos.norm, centers=num.clusters)
+modelo.kmeans
+
+asignaciones.clustering.kmeans <- modelo.kmeans$cluster
+head(asignaciones.clustering.kmeans)
+
+centroides.normalizados <- modelo.kmeans$centers
+centroides.normalizados
+
+centroides.desnormalizados = desnormaliza(datos, centroides.normalizados)
+centroides.desnormalizados
+
+```
+
+Consideraremos outliers a los datos más alejados del centroide del cluster al que han sido asignados:
+
+```{r echo=TRUE}
+
+top_clustering_outliers <-
+  function(datos.normalizados,
+           asignaciones.clustering,
+           datos.centroides.normalizados,
+           num.outliers) {
+    
+    dist.centroides <-
+      distancias_a_centroides(datos.normalizados,
+                              asignaciones.clustering,
+                              datos.centroides.normalizados)
+    
+    claves <-
+      order(dist.centroides, decreasing = TRUE)[1:num.outliers]
+    
+    list('distancias' = dist.centroides[claves], 'claves' = claves)
+  }
+
+```
+
+Los resultados obtenidos son los siguientes (outliers junto a sus correspondientes distancias a los centroides):
+
+```{r}
+
+top.outliers.kmeans <- top_clustering_outliers(datos.norm , 
+                                              asignaciones.clustering.kmeans, 
+                                              centroides.normalizados, 
+                                              num.outliers)
+
+claves.outliers.kmeans <- top.outliers.kmeans$claves 
+nombres.outliers.kmeans <- nombres_filas(datos, claves.outliers.kmeans)
+distancias.outliers.centroides <- top.outliers.kmeans$distancias
+
+# claves.outliers.kmeans
+
+# nombres.outliers.kmeans
+
+distancias.outliers.centroides
+
+```
+
+Podemos representar dichos outliers gráficamente:
+
+```{r}
+
+biplot_outliers_clustering(datos, 
+                           titulo = 'Outliers k-means',
+                           asignaciones.clustering = asignaciones.clustering.kmeans,
+                           claves.outliers = claves.outliers.kmeans)
+
+```
+
+Observamos que prácticamente todos los outliers encontrados se encuentran en el exterior de los clusters asignados, por lo que nos encontramos ante observaciones con valores extremos en alguna de sus variables. Podemos corroborarlo mediante boxplots:
+
+```{r}
+
+diag_caja_juntos(datos, 'Outliers k-means', claves.outliers.kmeans)
+
+```
+
+Los valores extremos más destacables para cada jugador son los siguientes:
+
+* `Player_69`: valor muy bajo en altura y alto número de asistencias.
+* `Player_1`: valor muy alto en asistencias por minuto y alto tiempo de juego.
+* `Player_68`: valor considerablemente alto en edad. Tal vez el más céntrico de los outliers detectados.
+* `Player_90`: valor muy bajo en altura.
+* `Player_71`: valores algo extremos en asistencias, tiempo de juego y edad.
+* `Player_60`: valor muy bajo en edad y asistencias por minuto.
+
+### Clustering empleando medoides
+
+Como alternativa al método anterior podemos utilizar PAM (Partition Around Medoids), basado en medoides. Los medoides obtenidos son los siguientes:
+
+```{r}
+
+set.seed(42)
+matriz.distancias <- dist(datos.norm)
+modelo.pam <- pam(matriz.distancias , k = num.clusters)
+
+asignaciones.clustering.pam <- modelo.pam$clustering   
+nombres.medoides <- modelo.pam$medoids    
+medoides <- datos[nombres.medoides, ]
+medoides.normalizados <- datos.norm[nombres.medoides, ]
+
+# nombres.medoides
+
+# medoides
+
+medoides.normalizados
+
+```
+
+Tras obtener los medoides correspondientes a cada cluster, calculamos los outliers junto a su distancia a dichos medoides:
+
+```{r}
+
+clustering.pam <- top_clustering_outliers(datos.norm, asignaciones.clustering.pam, medoides.normalizados, num.outliers)
+
+claves.outliers.pam <- clustering.pam$claves
+# claves.outliers.pam
+
+nombres.outliers.pam <- nombres_filas(datos.norm, claves.outliers.pam)
+# nombres.outliers.pam
+
+clustering.pam$distancias
+
+```
+
+Finalmente, los representamos gráficamente:
+
+```{r}
+
+biplot_outliers_clustering(datos, 
+                           titulo = 'Outliers PAM',
+                           asignaciones.clustering = asignaciones.clustering.pam,
+                           claves.outliers = claves.outliers.pam)
+
+```
+
+Apenas existen variaciones con respecto al método anterior. De nuevo, observamos que `Player_68` se trata del único outlier que podría no corresponderse únicamente con el valor extremo de una variable, sino debido a una combinación anómala de múltiples valores. Finalmente, este método nos revela el posible outlier `Player_95`, con una media de puntos por partido extremadamente baja (la menor de todo el dataset).
+
+## 3.4. Outliers multivariantes "puros"
+
+Podemos considerar como "puros" a aquellos outliers que no lo son con respecto a una única variable, es decir, outliers que son multivariantes pero no 1-variantes:
+
+```{r}
+
+num.outliers = 6
+
+claves.outliers.lof <- order(lof.scores, decreasing=TRUE)[1:num.outliers]
+
+claves.outliers.lof.no.IQR <- setdiff(claves.outliers.lof, claves.outliers.IQR.en.alguna.columna)
+nombres.outliers.lof.no.IQR <- nombres_filas(datos, claves.outliers.lof.no.IQR)
+
+# claves.outliers.IQR.en.alguna.columna
+
+# claves.outliers.lof
+
+# claves.outliers.lof.no.IQR
+
+nombres.outliers.lof.no.IQR
+
+biplot.max.outlier.lof <- biplot_2_colores(datos.norm, 
+                                          claves.outliers.lof.no.IQR, 
+                                          titulo = 'Outliers multivariantes puros')
+biplot.max.outlier.lof
+
+```
+
+Observamos dos outliers multivariantes puros diferenciados: `Player_31` y `Player_12`.
+
+* Sin duda, el caso más llamativo es el de `Player_12`, para el cual ya observamos al aplicar LOF que se trata de un jugador con una combinación anómala de `points_per_min`, `time_played` y `age` (jugador de mediana/baja edad con una gran cantidad de puntos por partido y minutos jugados).
+
+* Por otro lado, el jugador `Player_31` cumple con el prototipo de constructor del juego, con una baja estatura y puntos anotados, pero con un gran número de asistencias.
+
+Podemos ver en detalle el valor de las variables de estos jugadores para corroborar la información del gráfico:
+
+```{r}
+
+datos.norm[claves.outliers.lof.no.IQR, ]
+
+```
+
+# 4. Análisis de los resultados
+
+## Conjunto de datos
+
+Para realizar este trabajo se ha elegido el conjunto de datos *Basketball* (disponible en KEEL), empleando todas sus variables: `assists_per_min`, `height`, `time_played`, `age` y `points_per_min`. Todas las variables son numéricas, por lo que han sido normalizadas mediante z-score en los procedimientos que así lo han requerido.
+
+## Outliers en una variable
+
+### Método IQR
+
+Aunque no se han encontrado outliers extremos, sí se han encontrado outliers "no extremos":
+
+* Para la variable `height`, `Player_69`, `Player_51` y `Player_90` son jugadores con una considerablemente baja estatura. Posteriormente hemos observado un número de asistencias por minuto superior a la media para estos jugadores, luego se trata de un perfil de jugador encargado de dirigir el juego o construir las jugadas desde que el balón entra en movimiento. Podríamos intuir que ocupan la posición de *base* o incluso *alero*.
+
+* El jugador `Player_1`, por otro lado, cuenta con una media de puntos por minuto (`points_per_min`) muy superior al resto. Se trata de uno de los outliers más diferenciados. Su altura (`height`) y tiempo jugado (`time_played`) son considerablemente superiores a la media, lo que podría justificar su excelente rendimiento.
+
+### Test de hipótesis
+
+Tras aplicar el test de Shapiro-Wilk, no rechazamos la normalidad de las variables `assists_per_min` y `points_per_min`. En base a esto, tras aplicar el test de Grubbs concluimos que `Player_1` puede considerarse un outlier IQR con garantía estadística (p-value = 0.0074) para la variable `points_per_min`. 
+
+Por otro lado, el punto más cercano a considerarse outlier IQR para la variable `assists_per_min` es `Player_31` (p-value = 0.1732), el cual no podemos considerar outlier con garantía estadística.
+
+## Outliers multivariantes
+
+### Visualización con biplot
+
+La suma de los porcentajes explicados no es demasiado alta ($29.6\% + 34.9\% = 64.5\%$), por lo que la representación obtenida no es una aproximación tan buena como desearíamos ($70\%$).
+
+### Métodos estadísticos usando la distancia de Mahalanobis
+
+La distribución multivariable compuesta por `assists_per_min` y `points_per_min` es Normal (p-value = 0.705), por lo que hemos podido aplicar el método basado en la distancia de Mahalanobis con garantías estadísticas.
+
+Tras aplicar el *test individual* de Cerioli, solamente podemos afirmar que es un outlier con garantía estadística el ya conocido jugador `Player_1`, pues es el que presenta una mayor distancia de Mahalanobis. A su vez, tras aplicar el *test de intersección*, este no nos devuelve ningún outlier (algo común dada la estricta penalización para evitar el FWER).
+
+### LOF
+
+A la hora de aplicar LOF, en el gráfico de *scores* identificamos 2 outliers claramente diferenciados del resto de observaciones, seguidos por otros 4 puntos candidatos a ser considerados anómalos.
+
+* El outlier con mayor puntuación es `Player_69`, por lo que se encuentra muy alejado del resto de puntos. Cuenta un gran número de asistencias (es el quinto mejor asistente de los jugadores estudiados) y se trata del jugador más bajo de todos. Como ya adelantamos, se trata de las características propias de un jugador que ocupa la posición de base.
+
+* El siguiente outlier con mayor puntuación es `Player_1`, del cual ya hemos hablado previamente: cuenta con la mejor media de puntos por minuto, es alto y ha jugado más minutos que la media. Se trata de un jugador con muy buen rendimiento, en parte seguramente por su condición física.
+
+* Si nos fijamos en `Player_90`, observamos que se encuentra en una zona relativamente poco densa. Es un jugador de estatura media/baja en relación al resto, joven y con poco tiempo de juego.
+
+* Los jugadores `Player_51` y `Player_31` son los siguientes en cuanto a LOF *score* se refiere: mientras que `Player_51` destaca por su baja estatura, el jugador `Player_31` lo hace por su gran número de asistencias por minuto. Para el resto de variables, los valores no son muy diferentes, de ahí que sean dos puntos bastante próximos.
+
+* Finalmente tenemos al jugador `Player_12`, el cual no destaca por ninguna de sus variables en concreto, por lo que se encuentra relativamente cerca de la nube de puntos central del biplot. No obstante, hemos visto que su naturaleza anómala podría deberse a la combinación de su media de puntos por minuto, tiempo de juego y edad, ya que se trata de un jugador  joven, con alto número de puntos y tiempo de juego considerable.
+
+### Métodos basados en clustering
+
+Tras aplicar *k-means* hemos encontrado posibles nuevos outliers que toman valores extremos y que, por tanto, se alejan de lo habitual. Frente a los ya conocidos `Player_69`, `Player_1` y `Player_ 90`, tenemos los casos de `Player_60` (valor muy bajo en edad y asistencias por minuto) y `Player_71` (valores algo extremos en asistencias, tiempo de juego y edad), así como de `Player_68` (valor considerablemente alto en edad, aunque bastante céntrico en relación al resto).
+
+Finalmente, aplicando PAM (agrupamiento basado en medoides), aparece `Player_95`: el jugador con menor media de puntos por partido de todo nuestro conjunto de datos.
